@@ -1,73 +1,40 @@
-import Database from 'better-sqlite3'
-import path from 'path'
 import fs from 'fs'
+import path from 'path'
 import type { LearningSession } from './types'
 
-const DB_DIR = path.join(process.cwd(), '.data')
-const DB_PATH = path.join(DB_DIR, 'zhongkao.db')
+const DATA_DIR = path.join(process.cwd(), '.data')
+const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json')
+const IMAGES_DIR = path.join(DATA_DIR, 'images')
 
-function getDb() {
-  if (!fs.existsSync(DB_DIR)) {
-    fs.mkdirSync(DB_DIR, { recursive: true })
+function ensureDirs() {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true })
+  if (!fs.existsSync(IMAGES_DIR)) fs.mkdirSync(IMAGES_DIR, { recursive: true })
+}
+
+function readSessions(): Record<string, LearningSession> {
+  ensureDirs()
+  if (!fs.existsSync(SESSIONS_FILE)) return {}
+  try {
+    return JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf-8'))
+  } catch {
+    return {}
   }
-  const db = new Database(DB_PATH)
-  db.pragma('journal_mode = WAL')
-  return db
 }
 
-function initDb() {
-  const db = getDb()
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      id TEXT PRIMARY KEY,
-      student_name TEXT NOT NULL,
-      exam_name TEXT NOT NULL,
-      uploaded_at TEXT NOT NULL,
-      data TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS images (
-      id TEXT PRIMARY KEY,
-      session_id TEXT,
-      filename TEXT NOT NULL,
-      mime_type TEXT NOT NULL,
-      data BLOB NOT NULL,
-      uploaded_at TEXT NOT NULL
-    );
-  `)
-  db.close()
+function writeSessions(data: Record<string, LearningSession>) {
+  ensureDirs()
+  fs.writeFileSync(SESSIONS_FILE, JSON.stringify(data, null, 2), 'utf-8')
 }
-
-initDb()
 
 export function saveSession(session: LearningSession): void {
-  const db = getDb()
-  try {
-    const stmt = db.prepare(`
-      INSERT OR REPLACE INTO sessions (id, student_name, exam_name, uploaded_at, data)
-      VALUES (?, ?, ?, ?, ?)
-    `)
-    stmt.run(
-      session.id,
-      session.studentName,
-      session.examName,
-      session.uploadedAt,
-      JSON.stringify(session)
-    )
-  } finally {
-    db.close()
-  }
+  const data = readSessions()
+  data[session.id] = session
+  writeSessions(data)
 }
 
 export function getSession(id: string): LearningSession | null {
-  const db = getDb()
-  try {
-    const stmt = db.prepare('SELECT data FROM sessions WHERE id = ?')
-    const row = stmt.get(id) as { data: string } | undefined
-    return row ? JSON.parse(row.data) : null
-  } finally {
-    db.close()
-  }
+  const data = readSessions()
+  return data[id] || null
 }
 
 export function listSessions(): Array<{
@@ -78,52 +45,45 @@ export function listSessions(): Array<{
   wrongQuestions: number
   overallProgress: number
 }> {
-  const db = getDb()
-  try {
-    const stmt = db.prepare('SELECT data FROM sessions ORDER BY uploaded_at DESC')
-    const rows = stmt.all() as { data: string }[]
-    return rows.map((row) => {
-      const s: LearningSession = JSON.parse(row.data)
-      return {
-        id: s.id,
-        studentName: s.studentName,
-        examName: s.examName,
-        uploadedAt: s.uploadedAt,
-        wrongQuestions: s.wrongQuestions,
-        overallProgress: s.overallProgress,
-      }
-    })
-  } finally {
-    db.close()
-  }
+  const data = readSessions()
+  return Object.values(data)
+    .sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt))
+    .map((s) => ({
+      id: s.id,
+      studentName: s.studentName,
+      examName: s.examName,
+      uploadedAt: s.uploadedAt,
+      wrongQuestions: s.wrongQuestions,
+      overallProgress: s.overallProgress,
+    }))
 }
 
 export function saveImage(
   id: string,
-  sessionId: string | null,
-  filename: string,
+  _sessionId: string | null,
+  _filename: string,
   mimeType: string,
   data: Buffer
 ): void {
-  const db = getDb()
-  try {
-    const stmt = db.prepare(`
-      INSERT INTO images (id, session_id, filename, mime_type, data, uploaded_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `)
-    stmt.run(id, sessionId, filename, mimeType, data, new Date().toISOString())
-  } finally {
-    db.close()
-  }
+  ensureDirs()
+  const ext = mimeType.split('/')[1] || 'jpg'
+  const metaPath = path.join(IMAGES_DIR, `${id}.json`)
+  const dataPath = path.join(IMAGES_DIR, `${id}.${ext}`)
+  fs.writeFileSync(dataPath, data)
+  fs.writeFileSync(metaPath, JSON.stringify({ mimeType, ext }), 'utf-8')
 }
 
 export function getImage(id: string): { data: Buffer; mimeType: string } | null {
-  const db = getDb()
+  ensureDirs()
+  // 查找meta文件
+  const metaPath = path.join(IMAGES_DIR, `${id}.json`)
+  if (!fs.existsSync(metaPath)) return null
   try {
-    const stmt = db.prepare('SELECT data, mime_type FROM images WHERE id = ?')
-    const row = stmt.get(id) as { data: Buffer; mime_type: string } | undefined
-    return row ? { data: row.data, mimeType: row.mime_type } : null
-  } finally {
-    db.close()
+    const { mimeType, ext } = JSON.parse(fs.readFileSync(metaPath, 'utf-8'))
+    const dataPath = path.join(IMAGES_DIR, `${id}.${ext}`)
+    if (!fs.existsSync(dataPath)) return null
+    return { data: fs.readFileSync(dataPath), mimeType }
+  } catch {
+    return null
   }
 }
