@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk'
+import OpenAI from 'openai'
 import type {
   RecognizedQuestion,
   ErrorAnalysis,
@@ -7,11 +7,16 @@ import type {
 } from './types'
 import { v4 as uuidv4 } from 'uuid'
 
-const client = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
+const client = new OpenAI({
+  apiKey: process.env.KIMI_API_KEY,
+  baseURL: 'https://api.moonshot.cn/v1',
 })
 
-const CHEMISTRY_SYSTEM_PROMPT = `你是一位专门辅导大连市初三化学中考的AI老师。
+// 视觉识别用视觉模型，文字分析用长文本模型
+const VISION_MODEL = 'moonshot-v1-32k-vision-preview'
+const TEXT_MODEL = 'moonshot-v1-32k'
+
+const SYSTEM_PROMPT = `你是一位专门辅导大连市初三化学中考的AI老师。
 学生就读于高新技术产业园区第一中学，今年6月参加大连市中考。
 使用人教版化学教材，考试总分60分（笔试50分+实验10分）。
 
@@ -27,20 +32,21 @@ export async function recognizeExamPaper(
   imageBase64: string,
   mimeType: string
 ): Promise<RecognizedQuestion[]> {
-  const response = await client.messages.create({
-    model: 'claude-3-5-sonnet-20241022',
+  const response = await client.chat.completions.create({
+    model: VISION_MODEL,
     max_tokens: 4096,
-    system: CHEMISTRY_SYSTEM_PROMPT,
     messages: [
+      {
+        role: 'system',
+        content: SYSTEM_PROMPT,
+      },
       {
         role: 'user',
         content: [
           {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: mimeType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
-              data: imageBase64,
+            type: 'image_url',
+            image_url: {
+              url: `data:${mimeType};base64,${imageBase64}`,
             },
           },
           {
@@ -57,7 +63,7 @@ export async function recognizeExamPaper(
       "studentAnswer": "学生写的答案（如果能看到）",
       "correctAnswer": "正确答案（如果试卷上有批改标注）",
       "isCorrect": true或false,
-      "score": 该题分值（如果能识别）,
+      "score": 该题分值（如果能识别，否则填0）,
       "topic": "所属化学知识点，如：酸碱盐、化学方程式、物质的分类、溶液、氧化还原等"
     }
   ]
@@ -67,18 +73,17 @@ export async function recognizeExamPaper(
 - studentAnswer 填学生实际写的内容
 - correctAnswer 填红笔批改的正确答案，或根据化学知识判断正确答案
 - isCorrect 根据批改标记或答案比对判断
-- 如果某项信息不明确，填空字符串""`,
+- 如果某项信息不明确，填空字符串""
+- 只返回JSON，不要有其他内容`,
           },
         ],
       },
     ],
   })
 
-  const content = response.content[0]
-  if (content.type !== 'text') throw new Error('Unexpected response type')
-
-  const jsonMatch = content.text.match(/\{[\s\S]*\}/)
-  if (!jsonMatch) throw new Error('No JSON found in response')
+  const text = response.choices[0]?.message?.content || ''
+  const jsonMatch = text.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) throw new Error('识别失败，请确保图片清晰')
 
   const parsed = JSON.parse(jsonMatch[0])
   return parsed.questions.map((q: Omit<RecognizedQuestion, 'id'>) => ({
@@ -92,11 +97,14 @@ export async function recognizeExamPaper(
 export async function analyzeError(
   question: RecognizedQuestion
 ): Promise<ErrorAnalysis> {
-  const response = await client.messages.create({
-    model: 'claude-3-5-sonnet-20241022',
+  const response = await client.chat.completions.create({
+    model: TEXT_MODEL,
     max_tokens: 2048,
-    system: CHEMISTRY_SYSTEM_PROMPT,
     messages: [
+      {
+        role: 'system',
+        content: SYSTEM_PROMPT,
+      },
       {
         role: 'user',
         content: `请分析这道化学题的错误原因：
@@ -120,16 +128,16 @@ errorType说明：
 - concept_confusion: 概念混淆（把A知识点当B用）
 - knowledge_gap: 知识缺失（完全不知道这个知识点）
 - misreading: 审题偏差（读错题意）
-- method_unclear: 方法不熟（知道但步骤混乱）`,
+- method_unclear: 方法不熟（知道但步骤混乱）
+
+只返回JSON，不要有其他内容`,
       },
     ],
   })
 
-  const content = response.content[0]
-  if (content.type !== 'text') throw new Error('Unexpected response type')
-
-  const jsonMatch = content.text.match(/\{[\s\S]*\}/)
-  if (!jsonMatch) throw new Error('No JSON found in response')
+  const text = response.choices[0]?.message?.content || ''
+  const jsonMatch = text.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) throw new Error('分析失败，请重试')
 
   const parsed = JSON.parse(jsonMatch[0])
   return {
@@ -147,11 +155,14 @@ export async function generateVerificationQuestions(
   question: RecognizedQuestion,
   analysis: ErrorAnalysis
 ): Promise<VerificationQuestion[]> {
-  const response = await client.messages.create({
-    model: 'claude-3-5-sonnet-20241022',
+  const response = await client.chat.completions.create({
+    model: TEXT_MODEL,
     max_tokens: 2048,
-    system: CHEMISTRY_SYSTEM_PROMPT,
     messages: [
+      {
+        role: 'system',
+        content: SYSTEM_PROMPT,
+      },
       {
         role: 'user',
         content: `根据学生的错误，生成2道验证题来检验学生是否真正理解了。
@@ -171,21 +182,22 @@ export async function generateVerificationQuestions(
     {
       "questionText": "题目内容",
       "questionType": "choice|fill|short_answer|calculation",
-      "options": ["A. xxx", "B. xxx", "C. xxx", "D. xxx"],（选择题才有，其他题型此字段省略）
+      "options": ["A. xxx", "B. xxx", "C. xxx", "D. xxx"],
       "correctAnswer": "正确答案",
       "trapDescription": "这道题设置了什么陷阱，为什么容易错，一句话"
     }
   ]
-}`,
+}
+
+注意：options字段只有选择题才需要，其他题型不要包含此字段。
+只返回JSON，不要有其他内容`,
       },
     ],
   })
 
-  const content = response.content[0]
-  if (content.type !== 'text') throw new Error('Unexpected response type')
-
-  const jsonMatch = content.text.match(/\{[\s\S]*\}/)
-  if (!jsonMatch) throw new Error('No JSON found in response')
+  const text = response.choices[0]?.message?.content || ''
+  const jsonMatch = text.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) throw new Error('生成验证题失败，请重试')
 
   const parsed = JSON.parse(jsonMatch[0])
   return parsed.questions.map((q: Omit<VerificationQuestion, 'id' | 'parentErrorId' | 'targetErrorType'>) => ({
@@ -197,7 +209,7 @@ export async function generateVerificationQuestions(
   }))
 }
 
-// 判断学生回答验证题是否正确，并给出反馈
+// 判断学生回答验证题是否正确
 export async function evaluateVerificationAnswer(
   verificationQuestion: VerificationQuestion,
   studentAnswer: string
@@ -207,11 +219,14 @@ export async function evaluateVerificationAnswer(
   stillHasError: boolean
   errorDetail?: string
 }> {
-  const response = await client.messages.create({
-    model: 'claude-3-5-sonnet-20241022',
+  const response = await client.chat.completions.create({
+    model: TEXT_MODEL,
     max_tokens: 1024,
-    system: CHEMISTRY_SYSTEM_PROMPT,
     messages: [
+      {
+        role: 'system',
+        content: SYSTEM_PROMPT,
+      },
       {
         role: 'user',
         content: `判断学生对这道验证题的回答是否正确：
@@ -224,19 +239,19 @@ export async function evaluateVerificationAnswer(
 请以JSON格式返回：
 {
   "isCorrect": true或false,
-  "stillHasError": true或false（学生是否还是犯了类似错误）,
+  "stillHasError": true或false,
   "feedback": "针对学生这个答案的反馈，口语化，50字以内",
   "errorDetail": "如果还是错了，具体哪里错了（可选）"
-}`,
+}
+
+只返回JSON，不要有其他内容`,
       },
     ],
   })
 
-  const content = response.content[0]
-  if (content.type !== 'text') throw new Error('Unexpected response type')
-
-  const jsonMatch = content.text.match(/\{[\s\S]*\}/)
-  if (!jsonMatch) throw new Error('No JSON found in response')
+  const text = response.choices[0]?.message?.content || ''
+  const jsonMatch = text.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) throw new Error('评估失败，请重试')
 
   return JSON.parse(jsonMatch[0])
 }
