@@ -28,7 +28,7 @@ export async function recognizeExamPaper(
   mimeType: string
 ): Promise<RecognizedQuestion[]> {
   const response = await client.messages.create({
-    model: 'claude-sonnet-4-6',
+    model: 'claude-3-5-sonnet-20241022',
     max_tokens: 4096,
     system: CHEMISTRY_SYSTEM_PROMPT,
     messages: [
@@ -93,7 +93,7 @@ export async function analyzeError(
   question: RecognizedQuestion
 ): Promise<ErrorAnalysis> {
   const response = await client.messages.create({
-    model: 'claude-sonnet-4-6',
+    model: 'claude-3-5-sonnet-20241022',
     max_tokens: 2048,
     system: CHEMISTRY_SYSTEM_PROMPT,
     messages: [
@@ -148,7 +148,7 @@ export async function generateVerificationQuestions(
   analysis: ErrorAnalysis
 ): Promise<VerificationQuestion[]> {
   const response = await client.messages.create({
-    model: 'claude-sonnet-4-6',
+    model: 'claude-3-5-sonnet-20241022',
     max_tokens: 2048,
     system: CHEMISTRY_SYSTEM_PROMPT,
     messages: [
@@ -208,7 +208,7 @@ export async function evaluateVerificationAnswer(
   errorDetail?: string
 }> {
   const response = await client.messages.create({
-    model: 'claude-sonnet-4-6',
+    model: 'claude-3-5-sonnet-20241022',
     max_tokens: 1024,
     system: CHEMISTRY_SYSTEM_PROMPT,
     messages: [
